@@ -1,0 +1,858 @@
+# Java Gradle CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-java/ for more details
+#
+version: 2.1
+
+orbs:
+  artifactory-orb: jfrog/artifactory-orb@1.0.1
+  aws-ecr: circleci/aws-ecr@6.15.3
+  slack: circleci/slack@4.3.0
+  jira: circleci/jira@1.3.1
+  
+
+
+jobs:
+  variables-bash:
+    docker:
+      - image: 'cimg/base:stable'
+      
+    working_directory: ~/repo
+
+    steps:
+     - checkout
+     - run:
+         name: "Setup environment"
+         command: |
+            sudo apt-get update && sudo apt-get install git curl jq gettext-base
+
+       ########################################
+       # summary-description-git-notifications#
+       ########################################    
+     - run:
+         name: Summary description commit
+         command:
+           | 
+           mkdir -p workspace 
+           echo 'export COMMENT=$(git rev-list --format=oneline --max-count=1 $CIRCLE_SHA1 | sed "s/[^ ]* //")' >> workspace/new-vars
+           cat workspace/new-vars >> $BASH_ENV           
+           source $BASH_ENV
+           
+     - persist_to_workspace:
+         root: workspace
+         paths:
+           - new-vars      
+           
+       ###############################
+       # no-productive notifications #
+       ###############################     
+     - slack/notify:
+         event: fail
+         branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+         channel: C01PQ27R3N2            
+         template: FAIL_NUBOX      
+     - slack/notify:
+         event: pass
+         branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+         channel: C01PQ27R3N2           
+         template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+     - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+     - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+     - jira/notify
+
+
+  build-task:
+    docker:
+      - image: circleci/openjdk:11-jdk
+
+    working_directory: ~/repo
+
+    environment:
+      # Customize the JVM maximum heap limit
+      JVM_OPTS: -Xmx3200m
+      TERM: dumb
+
+    steps:
+      - checkout
+      
+       ########################################
+       # summary-description-git-notifications#
+       ######################################## 
+      
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            # fallback to using the latest cache if no exact match is found
+            - v1-dependencies-
+      
+      # Refresh Dependencies
+      - run: gradle dependencies
+      
+      # Store Dependencies
+      - save_cache:
+          paths:
+            - ~/.gradle
+          key: v1-dependencies-{{ checksum "build.gradle" }}
+
+      # run build without tests
+      - run: gradle build -x test
+      
+      # Save the jars
+      - persist_to_workspace:
+          root: /home/circleci/repo
+          paths:
+            - build/libs/*.jar
+      
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+
+  test-task:
+    docker:
+      - image: circleci/openjdk:11-jdk
+      
+    working_directory: ~/repo
+
+    environment:
+      # Customize the JVM maximum heap limit
+      JVM_OPTS: -Xmx3200m
+      TERM: dumb
+
+    steps:
+      - checkout
+      
+       ########################################
+       # summary-description-git-notifications#
+       ########################################     
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies-
+
+      # run tests!
+      - run: gradle test jacocoTestReport
+
+      - run:
+          name: Save test results
+          command: |
+            mkdir -p ~/test-results/junit/
+            find . -type f -regex ".*/build/test-results/.*xml" -exec cp {} ~/test-results/junit/ \;
+          when: always
+      - store_test_results:
+          path: ~/test-results
+      - store_artifacts:
+          path: ~/test-results/junit 
+      
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+
+  sonarqube-task:
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+      - checkout
+      
+      ########################################
+      # summary-description-git-notifications#
+      ########################################     
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+      
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies-
+      - run:
+          name: "Setup environment"
+          command: |
+            sudo apt-get update && sudo apt-get install nodejs zip openjdk-11-jdk-headless git curl jq grep sed bash
+            sudo add-apt-repository ppa:cwchien/gradle -y
+            sudo apt-get update
+            sudo apt upgrade gradle
+      - run:
+          name: "compile project"
+          command: |
+            gradle clean build test jacocoTestReport
+      - run:
+          name: "Install Sonarqube scanner"
+          command: |
+            wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.2.0.1873.zip
+            unzip sonar-scanner-cli-4.2.0.1873.zip 
+      - run:
+          name: Code analysis
+          command: |
+            export SONAR_RUNNER_OPTS="-Xms1024m -Xmx4096m"
+
+            if [[ "$CIRCLE_BRANCH" =~ (master|develop)$ ]]; then
+                eval ./sonar-scanner-4.2.0.1873/bin/sonar-scanner \
+                  -Dsonar.host.url="https://sonarcloud.io/" \
+                  -Dsonar.login=$token \
+                  -Dsonar.java.binaries=. \
+                  -Dsonar.organization="suma" \
+                  -Dsonar.projectKey=${CIRCLE_PROJECT_USERNAME}_${CIRCLE_PROJECT_REPONAME} \
+                  -Dsonar.sources="." \
+                  -Dsonar.test="src/test/java" \
+                  -Dsonar.branch.name=${CIRCLE_BRANCH} \
+                  -Dsonar.exclusions="**/*.yaml,**/*.yml,src/test/java/**,src/main/java/**/data/common/**,src/main/java/**/*Application.java" \
+                  -Dsonar.coverage.jacoco.xmlReportPaths="build/reports/jacoco/test/jacocoTestReport.xml" \
+                  -Dsonar.junit.reportPaths="build/test-results/test" 
+            else
+                eval ./sonar-scanner-4.2.0.1873/bin/sonar-scanner \
+                  -Dsonar.host.url="https://sonarcloud.io/" \
+                  -Dsonar.login=$token \
+                  -Dsonar.java.binaries=. \
+                  -Dsonar.organization="suma" \
+                  -Dsonar.projectKey=${CIRCLE_PROJECT_USERNAME}_${CIRCLE_PROJECT_REPONAME} \
+                  -Dsonar.sources="." \
+                  -Dsonar.test="src/test/java" \
+                  -Dsonar.branch.name=${CIRCLE_BRANCH} \
+                  -Dsonar.branch.target=$(git show-branch -a | grep '\*' | grep -v `git rev-parse --abbrev-ref HEAD` | head -n1 | sed 's/.*\[\(.*\)\].*/\1/' | sed 's/[\^~].*//' | sed -e 's#.*\/\(\)#\1#') \
+                  -Dsonar.exclusions="**/*.yaml,**/*.yml,src/test/java/**,src/main/java/**/data/common/**,src/main/java/**/*Application.java" \
+                  -Dsonar.coverage.jacoco.xmlReportPaths="build/reports/jacoco/test/jacocoTestReport.xml" \
+                  -Dsonar.junit.reportPaths="build/test-results/test"
+            fi
+
+             
+
+      - run:
+          name: Check quality gate
+          command: |
+            REPORT_PATH=".scannerwork/report-task.txt"
+            CE_TASK_ID_KEY="ceTaskId="
+
+            SONAR_INSTANCE="https://sonarcloud.io"
+            SLEEP_TIME=5
+
+            # get the compute engine task id
+            ce_task_id=$(cat $REPORT_PATH | grep $CE_TASK_ID_KEY | cut -d'=' -f2)
+            echo "Using task id of ${ce_task_id}"
+
+            if [ -z "$ce_task_id" ]; then
+              echo "No task id found"
+              exit 1
+            fi
+
+            # grab the status of the task
+            # if CANCELLED or FAILED, fail the Build
+            # if SUCCESS, stop waiting and grab the analysisId
+            wait_for_success=true
+
+            while [ "${wait_for_success}" = "true" ]
+            do
+              ce_status=$(curl -s -u "${token}": "${SONAR_INSTANCE}"/api/ce/task?id=${ce_task_id} | jq -r .task.status)
+
+              echo "Status of SonarQube task is ${ce_status}"
+
+              if [ "${ce_status}" = "CANCELLED" ]; then
+                echo "SonarQube Compute job has been cancelled - exiting with error"
+                exit 504
+              fi
+
+              if [ "${ce_status}" = "FAILED" ]; then
+                echo "SonarQube Compute job has failed - exit with error"
+                exit 500
+              fi
+
+              if [ "${ce_status}" = "SUCCESS" ]; then
+                wait_for_success=false
+              fi
+
+              sleep "${SLEEP_TIME}"
+
+            done
+
+            ce_analysis_id=$(curl -s -u ${token}: $SONAR_INSTANCE/api/ce/task?id=$ce_task_id | jq -r .task.analysisId)
+            echo "Using analysis id of ${ce_analysis_id}"
+
+            # get the status of the quality gate for this analysisId
+            qg_status=$(curl -s -u ${token}: $SONAR_INSTANCE/api/qualitygates/project_status?analysisId="${ce_analysis_id}" | jq -r .projectStatus.status)
+            echo "Quality Gate status is ${qg_status}"
+
+            if [ "${qg_status}" != "OK" ]; then
+              echo "Quality gate is not OK - exiting with error"
+              exit 1
+            fi
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+  #
+  # Artifactory Tasks
+  #
+  publish-on-artifactory-develop:
+    docker:
+      - image: circleci/openjdk:11-jdk
+    working_directory: ~/repo
+    steps:
+      - checkout
+      ########################################
+      # summary-description-git-notifications#
+      ########################################     
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+      
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies-
+      - run:
+          name: Install jFrog CLI
+          command: |
+           curl -fL https://getcli.jfrog.io | sh
+           gradle build
+           ./jfrog rt config --url $ARTIFACTORY_URL --user $ARTIFACTORY_USER --apikey $ARTIFACTORY_APIKEY --interactive=false
+           chmod +x gradlew
+           ./jfrog rt gradle-config --use-wrapper=true --repo-resolve=remote-backend-dev --server-id-resolve=Default-Server --repo-deploy=local-backend-dev --server-id-deploy=Default-Server
+           ./jfrog rt gradle clean build artifactoryPublish -b build.gradle > rt.txt
+           DEPLOYED_FILE=$(cat rt.txt | grep "**.jar$" | sed -n -e 's/^.*artifactory\///p')
+           ./jfrog rt sp $DEPLOYED_FILE "commit=${CIRCLE_SHA1:0:7};branch=${CIRCLE_BRANCH:0:3}"
+
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+
+  publish-on-artifactory-release:
+    docker:
+      - image: circleci/openjdk:11-jdk
+    working_directory: ~/repo
+    steps:
+      - checkout
+      
+      ########################################
+      # summary-description-git-notifications#
+      ########################################     
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+      
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies-
+      - run:
+          name: Install jFrog CLI
+          command: |
+           curl -fL https://getcli.jfrog.io | sh
+           gradle build
+           ./jfrog rt config --url $ARTIFACTORY_URL --user $ARTIFACTORY_USER --apikey $ARTIFACTORY_APIKEY --interactive=false
+           chmod +x gradlew
+           ./jfrog rt gradle-config --use-wrapper=true --repo-resolve=remote-backend-dev --server-id-resolve=Default-Server --repo-deploy=local-backend-dev --server-id-deploy=Default-Server
+           ./jfrog rt gradle clean build artifactoryPublish -b build.gradle > rt.txt
+           DEPLOYED_FILE=$(cat rt.txt | grep "**.jar$" | sed -n -e 's/^.*artifactory\///p')
+           ./jfrog rt sp $DEPLOYED_FILE "commit=${CIRCLE_SHA1:0:7};branch=${CIRCLE_BRANCH:0:3}"
+
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+
+
+  publish-on-artifactory-master:
+    docker:
+      - image: circleci/openjdk:11-jdk
+    working_directory: ~/repo
+    steps:
+      - checkout
+      
+      ########################################
+      # summary-description-git-notifications#
+      ########################################
+      
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies-
+      - run:
+          name: Install jFrog CLI
+          command: |
+           curl -fL https://getcli.jfrog.io | sh
+           gradle build
+           ./jfrog rt config --url $ARTIFACTORY_URL --user $ARTIFACTORY_USER --apikey $ARTIFACTORY_APIKEY --interactive=false
+           chmod +x gradlew
+           ./jfrog rt gradle-config --use-wrapper=true --repo-resolve=remote-backend-dev --server-id-resolve=Default-Server --repo-deploy=local-backend-dev --server-id-deploy=Default-Server
+           ./jfrog rt gradle clean build artifactoryPublish -b build.gradle > rt.txt
+           DEPLOYED_FILE=$(cat rt.txt | grep "**.jar$" | sed -n -e 's/^.*artifactory\///p')
+           ./jfrog rt sp $DEPLOYED_FILE "commit=${CIRCLE_SHA1:0:7};branch=${CIRCLE_BRANCH:0:3}"
+
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+          
+      - jira/notify
+  #
+  # AWS ECR Tasks
+  #
+  awsecr-develop:
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+      - run: echo "AWS ECR ${CIRCLE_BRANCH}"
+
+  awsecr-release:
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+      - run: echo "AWS ECR ${CIRCLE_BRANCH}"
+      
+  awsecr-master:
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+      - run: echo "AWS ECR ${CIRCLE_BRANCH}"
+
+  success-notify-develop:    
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+    
+      - checkout      
+      ########################################
+      # summary-description-git-notifications#
+      ########################################
+      
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+    
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+
+      - jira/notify
+
+  success-notify-release:    
+    docker:
+      - image: 'cimg/base:stable'
+    steps:    
+         
+      ########################################
+      # summary-description-git-notifications#
+      ########################################      
+      
+      - checkout          
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+    
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+
+      - jira/notify
+
+  success-notify-master:    
+    docker:
+      - image: 'cimg/base:stable'
+    steps:
+    
+      - checkout      
+      ########################################
+      # summary-description-git-notifications#
+      ########################################      
+      - run: mkdir -p workspace  
+      - attach_workspace:
+          at: workspace
+      - run: cat workspace/new-vars >> $BASH_ENV
+    
+       ###############################
+       # no-productive notifications #
+       ###############################     
+      - slack/notify:
+          event: fail
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*            
+          channel: C01PQ27R3N2            
+          template: FAIL_NUBOX      
+      - slack/notify:
+          event: pass
+          branch_pattern: feature\/.*|develop|hotfix\/.*|release\/.*    
+          channel: C01PQ27R3N2           
+          template: SUCCESS_NUBOX
+       ###############################
+       # productive notifications    #
+       ###############################
+      - slack/notify:
+          event: fail
+          branch_pattern: master
+          channel: C01QKTYGUL8      
+          template: FAIL_NUBOX
+      - slack/notify:
+          event: pass
+          branch_pattern: master
+          channel: C01QKTYGUL8
+          template: SUCCESS_NUBOX
+
+      - jira/notify  
+
+#####################################
+#              WORKFLOWS            #
+#####################################
+workflows:
+  build_and_test:
+    jobs:
+      ###############################################
+      #                   Base Jobs                 #
+      ###############################################
+      - variables-bash: 
+          context: slack_template 
+      - build-task:
+          context: slack_template 
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: development
+          requires:
+              - variables-bash 
+
+      - test-task:
+          context: slack_template 
+          requires:
+              - build-task
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: testing
+          
+      - sonarqube-task:        
+          requires:
+              - test-task
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: testing
+          context:
+            - sonarCloud
+            - slack_template
+      
+      ###############################################
+      #                 DEVELOP                     #
+      ###############################################
+      - publish-on-artifactory-develop:
+          context: slack_template
+          requires:
+              - sonarqube-task
+          filters:
+              branches:
+                only: /develop/
+      ###############################################
+      #                 RELEASE                     #
+      ###############################################
+      - publish-on-artifactory-release:
+          context: slack_template
+          requires:
+              - sonarqube-task
+          filters:
+              branches:
+                only: /release\/.*/
+      ###############################################
+      #                 MASTER                      #
+      ###############################################         
+      - slack/on-hold:
+          context: slack_template
+          filters:
+              branches:
+                only: /master/
+          requires:
+              - sonarqube-task
+
+      - approve-deploy:
+          context: slack_template
+          type: approval
+          requires:
+              - sonarqube-task
+              - slack/on-hold
+          filters:
+              branches:
+                only: /master/
+
+      - publish-on-artifactory-master:
+          context: slack_template
+          requires:
+              - approve-deploy
+          filters:
+              branches:
+                only: /master/
+
+      - aws-ecr/build-and-push-image:
+          account-url: AWS_ECR_ACCOUNT_URL
+          aws-access-key-id: AWS_ACCESS_KEY_ID
+          aws-secret-access-key: AWS_SECRET_ACCESS_KEY
+          create-repo: false
+          checkout: true
+          no-output-timeout: 20m
+          path: .
+          region: AWS_DEFAULT_REGION
+          repo: '$CIRCLE_PROJECT_REPONAME'
+          skip-when-tags-exist: true
+          tag: '${CIRCLE_SHA1:0:7},latest,${CIRCLE_BRANCH:0:3}'
+          requires:
+            - publish-on-artifactory-develop
+            - publish-on-artifactory-release
+            - publish-on-artifactory-master
+          filters:
+            branches:
+              only: /develop|release\/.*/
+              
+      - success-notify-develop:
+          context: slack_template
+          requires:
+            - aws-ecr/build-and-push-image  
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: production
+          filters:
+              branches:
+                only: /develop/
+
+      - success-notify-release:
+          context: slack_template
+          requires:
+            - aws-ecr/build-and-push-image         
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: production
+          filters:
+              branches:
+                only: /release\/.*/
+                
+      - success-notify-master:
+          context: slack_template
+          requires:
+              - aws-ecr/build-and-push-image           
+          post-steps:
+              - jira/notify:
+                  job_type: deployment
+                  environment_type: production
+          filters:
+              branches:
+                only: /master/
+      
